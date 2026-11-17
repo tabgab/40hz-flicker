@@ -145,14 +145,17 @@ function analyze(ts) {
   for (let i = 1; i < ts.length; i++) d.push(ts[i] - ts[i - 1]);
   const median = [...d].sort((a, b) => a - b)[d.length >> 1];
   const tol = Math.max(0.1 * median, 1.1);
-  let steps = 0, regular = 0;
+  let steps = 0, regular = 0, skips = 0;
   for (const x of d) {
     const k = Math.max(1, Math.round(x / median));
     steps += k;
+    if (k > 1) skips++;
     if (Math.abs(x - k * median) <= tol * k) regular++;
   }
   const period = (ts[ts.length - 1] - ts[0]) / steps;
-  const stable = regular >= 0.8 * d.length;
+  // Many skipped frames mean the screen does not show every frame, for example a 60 Hz
+  // monitor driven by a 120 Hz frame clock. Such a screen cannot show the flicker pattern.
+  const stable = regular >= 0.8 * d.length && skips <= 0.05 * d.length;
   return plan(1000 / period, stable);
 }
 
@@ -183,6 +186,7 @@ const HINTS = `
   To get a fast enough rate:</p>
   <ul>
     <li><b>Mac:</b> use the built-in ProMotion display (MacBook Pro 14"/16") in Chrome, Edge or Firefox.
+      If external monitors are connected, move this window to the built-in display.
       In Safari, open Develop › Feature Flags and turn off "Prefer Page Rendering Updates near 60fps". Turn off Low Power Mode.</li>
     <li><b>iPhone / iPad Pro (ProMotion):</b> turn off Low Power Mode and Settings › Accessibility › Motion › Limit Frame Rate.
       In Settings › Apps › Safari › Advanced › Feature Flags, turn off "Prefer Page Rendering Updates near 60fps" if it is there.</li>
@@ -210,7 +214,8 @@ function render() {
             `A "40 Hz" pattern at 60 Hz repeats every 3 frames. The strongest flicker in it is then 20 Hz, with about twice the amplitude of the 40 Hz part.`
           : `${d.rate.toFixed(1)} Hz is not a multiple of 40 Hz, so cycles cannot all be 25 ms long. ` +
             `An approximation adds slower flicker components to the light.`)
-      : `Measured about ${d.rate.toFixed(1)} Hz, but frames arrive at irregular times.`;
+      : `Measured about ${d.rate.toFixed(1)} Hz, but frames arrive at irregular times or are skipped. ` +
+        `This screen may not show every frame.`;
     $("hints").innerHTML = HINTS +
       `<p style="margin-top:10px"><b>Sound only:</b> the 40 Hz sound is exact on any device, because it uses the audio clock. ` +
       `Choose a sound below to run a sound-only session on this screen.</p>`;
@@ -369,7 +374,7 @@ async function start() {
   }
   display = check;
   run = { N: check.N, period: check.period, onFrames, durationMs,
-          n: 0, last: null, t0: 0, dropped: 0, white: null, winT: 0, winSteps: 0 };
+          n: 0, last: null, t0: 0, dropped: 0, white: null, winT: 0, winSteps: 0, winDrop: 0 };
   phase = "running";
   window.__flickerLog = [];
   soundStart(sound);
@@ -388,9 +393,16 @@ function frame(t) {
     r.n += steps;
     r.winT += dt;
     r.winSteps += steps;
+    r.winDrop += steps - 1;
     if (r.winSteps >= 120) {
       const p = r.winT / r.winSteps;
-      r.winT = r.winSteps = 0;
+      const dropShare = r.winDrop / r.winSteps;
+      r.winT = r.winSteps = r.winDrop = 0;
+      if (dropShare > 0.1) {
+        display = plan(1000 / p, false);
+        return stop(`${Math.round(100 * dropShare)}% of frames were skipped, so the flicker was no longer 40 Hz. ` +
+                    `On a Mac, keep the window on the built-in display.`);
+      }
       if (Math.abs(p - r.period) > 0.03 * r.period) {
         display = plan(1000 / p, true);
         return stop(`The refresh rate changed to about ${(1000 / p).toFixed(1)} Hz during the session.`);
@@ -441,8 +453,8 @@ function showResult(r, reason) {
     <p class="status ${reason ? "bad" : "ok"} mono">${hz.toFixed(3)} Hz average</p>
     <p class="detail mono">${mins} min ${s} s · ${Math.round(cycles)} cycles · ${r.n} frames ·
       ${r.dropped} dropped frames (${pct.toFixed(2)}%)</p>
-    ${reason ? `<p class="detail">${reason}</p>` : ""}
-    <p class="detail">A dropped frame stretches one cycle, but the phase stays locked to the display clock, so the average stays at 40 Hz.</p>`;
+    <p class="detail">${reason ||
+      "A dropped frame stretches one cycle, but the phase stays locked to the display clock, so the average stays at 40 Hz."}</p>`;
 }
 
 // ---- Events ----------------------------------------------------------------
