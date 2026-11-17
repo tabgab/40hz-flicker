@@ -131,7 +131,8 @@ function collectFrames(count) {
     const warmup = 10;
     function tick(t) {
       ts.push(t);
-      if (ts.length < count + warmup) requestAnimationFrame(tick);
+      const slowDone = ts.length > warmup + 20 && t - ts[warmup] > 1500;
+      if (ts.length < count + warmup && !slowDone) requestAnimationFrame(tick);
       else resolve(ts.slice(warmup));
     }
     requestAnimationFrame(tick);
@@ -174,7 +175,15 @@ async function measure() {
   $("status").textContent = "Measuring refresh rate…";
   $("detail").textContent = "";
   $("hints").innerHTML = "";
-  display = analyze(await collectFrames(90));
+  // A ProMotion screen can run slowly for a moment after a page load or a window move. Try again.
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    if (attempt > 1) {
+      $("status").textContent = `Measuring refresh rate… (try ${attempt} of 3)`;
+      await new Promise((r) => setTimeout(r, 700));
+    }
+    display = analyze(await collectFrames(90));
+    if (display.exact) break;
+  }
   phase = "idle";
   render();
 }
@@ -201,17 +210,20 @@ function render() {
   const st = $("status");
   if (d.exact) {
     st.className = "status ok mono";
-    st.textContent = `Ready: ${d.achieved.toFixed(1)} Hz`;
+    st.textContent = `Ready: 40 Hz`;
     $("detail").textContent =
-      `Display ${d.rate.toFixed(1)} Hz · ${d.N} frames per cycle · ${(d.N * d.period).toFixed(1)} ms per cycle`;
+      `Display measured at ${d.rate.toFixed(1)} Hz · ${d.N} frames per cycle. ` +
+      `The exact average shows after each session.`;
     $("hints").innerHTML = "";
   } else {
     st.className = "status bad mono";
     st.textContent = d.stable ? `Not possible at ${d.rate.toFixed(1)} Hz` : "Frame timing is unstable";
     $("detail").textContent = d.stable
       ? (d.rate < 75
-          ? `This display refreshes at about ${Math.round(d.rate)} Hz. A cycle needs one light and one dark frame, so the limit is ${(d.rate / 2).toFixed(0)} Hz. ` +
-            `A "40 Hz" pattern at 60 Hz repeats every 3 frames. The strongest flicker in it is then 20 Hz, with about twice the amplitude of the 40 Hz part.`
+          ? `This display refreshes at about ${Math.round(d.rate)} Hz. A cycle needs one light and one dark frame, so the limit is ${(d.rate / 2).toFixed(0)} Hz.` +
+            (Math.abs(d.rate - 60) < 5
+              ? ` A "40 Hz" pattern at 60 Hz repeats every 3 frames. The strongest flicker in it is then 20 Hz, with about twice the amplitude of the 40 Hz part.`
+              : ``)
           : `${d.rate.toFixed(1)} Hz is not a multiple of 40 Hz, so cycles cannot all be 25 ms long. ` +
             `An approximation adds slower flicker components to the light.`)
       : `Measured about ${d.rate.toFixed(1)} Hz, but frames arrive at irregular times or are skipped. ` +
